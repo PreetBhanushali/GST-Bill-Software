@@ -348,10 +348,6 @@ with tab_add:
                     format="%.2f",
                 )
 
-            auto_total = st.checkbox(
-                "Calculate final total automatically",
-                value=True,
-            )
 
                calculated_total = without_gst + cgst + sgst
         
