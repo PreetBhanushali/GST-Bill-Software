@@ -2,49 +2,27 @@
 from pathlib import Path
 from datetime import date, datetime
 import calendar
+import re
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment
-from openpyxl.worksheet.table import Table, TableStyleInfo
 from openpyxl.utils import get_column_letter
 
 
-# --------------------------------------------------
-# CONFIGURATION
-# --------------------------------------------------
+# ==================================================
+# 1. APPLICATION CONFIGURATION
+# ==================================================
 
+st.set_page_config(
+    page_title="GST Sales Management",
+    page_icon="🧾",
+    layout="wide",
+)
 
 APP_DIR = Path(__file__).resolve().parent
-
-# Default to the previous month's sales period
-today = date.today()
-
-if today.month == 1:
-    sales_year = today.year - 1
-    sales_month = 12
-else:
-    sales_year = today.year
-    sales_month = today.month - 1
-
-sales_month_name = calendar.month_abbr[sales_month].upper()
-
-default_filename = (
-    f"GST SALES {sales_month_name} {sales_year}"
-)
-
-st.session_state.setdefault(
-    "active_workbook_name",
-    default_filename
-)
-
-
-EXCEL_FILE = (
-    APP_DIR / f"{st.session_state['active_workbook_name']}.xlsx"
-)
-
 
 COLUMNS = [
     "Date",
@@ -52,27 +30,77 @@ COLUMNS = [
     "Rupees (₹)",
     "GST Credit Party Name",
     "Without GST (₹)",
-    "9%",
-    "9%",
+    "CGST 9% (₹)",
+    "SGST 9% (₹)",
     "With Final Total (₹)",
 ]
 
-st.set_page_config(
-    page_title="GST Bill Management System",
-    page_icon="🧾",
-    layout="wide",
+AMOUNT_COLUMNS = [
+    "Rupees (₹)",
+    "Without GST (₹)",
+    "CGST 9% (₹)",
+    "SGST 9% (₹)",
+    "With Final Total (₹)",
+]
+
+# Default filename = previous month's sales
+today = date.today()
+previous_month = today.month - 1 or 12
+previous_year = today.year if today.month > 1 else today.year - 1
+
+default_filename = (
+    f"GST SALES {calendar.month_abbr[previous_month].upper()} "
+    f"{previous_year}"
 )
 
+if "active_workbook_name" not in st.session_state:
+    st.session_state["active_workbook_name"] = default_filename
 
-# --------------------------------------------------
-# EXCEL FUNCTIONS
-# --------------------------------------------------
 
-def style_worksheet(ws):
-    """Apply professional formatting to the Excel sheet."""
+# ==================================================
+# 2. MONTHLY EXCEL FILE SELECTOR
+# ==================================================
 
+st.sidebar.title("Monthly Excel File")
+
+with st.sidebar.form("workbook_selector"):
+    requested_name = st.text_input(
+        "Excel filename (without .xlsx)",
+        value=st.session_state["active_workbook_name"],
+        placeholder="GST SALES SEP 2026",
+    )
+
+    open_file_clicked = st.form_submit_button(
+        "Create / Open File",
+        type="primary",
+        use_container_width=True,
+    )
+
+if open_file_clicked:
+    clean_name = re.sub(
+        r'[<>:"/\\|?*]',
+        "",
+        requested_name.strip(),
+    ).strip().rstrip(".")
+
+    if not clean_name or clean_name in {".", ".."}:
+        st.sidebar.error("Enter a valid filename.")
+    else:
+        st.session_state["active_workbook_name"] = clean_name
+
+EXCEL_FILE = (
+    APP_DIR / f"{st.session_state['active_workbook_name']}.xlsx"
+)
+
+st.sidebar.caption(f"Current file: {EXCEL_FILE.name}")
+
+
+# ==================================================
+# 3. EXCEL WORKBOOK FUNCTIONS
+# ==================================================
+
+def format_worksheet(ws):
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = ws.dimensions
 
     widths = [15, 18, 17, 32, 20, 18, 18, 23]
 
@@ -97,16 +125,17 @@ def style_worksheet(ws):
         )
 
     ws.row_dimensions[1].height = 28
+    ws.auto_filter.ref = ws.dimensions
 
     for row in range(2, ws.max_row + 1):
+        ws.cell(row, 1).number_format = "dd-mm-yyyy"
+
         for col in (3, 5, 6, 7, 8):
             ws.cell(row, col).number_format = '#,##0.00'
 
-        ws.cell(row, 1).number_format = "dd-mm-yyyy"
-
 
 def ensure_workbook():
-    """Create the Excel file if it does not exist."""
+    """Create a new workbook only if the selected file is absent."""
 
     if EXCEL_FILE.exists():
         return
@@ -116,12 +145,13 @@ def ensure_workbook():
     ws.title = "Bill Records"
     ws.append(COLUMNS)
 
-    style_worksheet(ws)
+    format_worksheet(ws)
     wb.save(EXCEL_FILE)
+    wb.close()
 
 
 def load_records():
-    """Read saved bills and retain their Excel row numbers."""
+    """Load records and preserve actual Excel row numbers."""
 
     ensure_workbook()
 
@@ -130,9 +160,9 @@ def load_records():
 
     records = []
 
-    for excel_row in range(2, ws.max_row + 1):
+    for row_num in range(2, ws.max_row + 1):
         values = [
-            ws.cell(excel_row, col).value
+            ws.cell(row_num, col).value
             for col in range(1, len(COLUMNS) + 1)
         ]
 
@@ -140,7 +170,7 @@ def load_records():
             continue
 
         record = dict(zip(COLUMNS, values))
-        record["_excel_row"] = excel_row
+        record["_excel_row"] = row_num
         records.append(record)
 
     wb.close()
@@ -148,63 +178,37 @@ def load_records():
 
 
 def save_record(record):
-    """Append one new bill to the Excel workbook."""
-
-    ensure_workbook()
-
     wb = load_workbook(EXCEL_FILE)
     ws = wb["Bill Records"]
 
-    ws.append([record[column] for column in COLUMNS])
+    ws.append([record.get(column) for column in COLUMNS])
 
-    style_worksheet(ws)
+    format_worksheet(ws)
     wb.save(EXCEL_FILE)
     wb.close()
 
 
-def update_record(excel_row, record):
-    """Update an existing bill without adding a duplicate row."""
-
+def update_record(row_num, record):
     wb = load_workbook(EXCEL_FILE)
     ws = wb["Bill Records"]
 
-    for col, name in enumerate(COLUMNS, start=1):
-        ws.cell(excel_row, col).value = record[name]
+    for col_num, column in enumerate(COLUMNS, start=1):
+        ws.cell(row_num, col_num).value = record.get(column)
 
-    style_worksheet(ws)
+    format_worksheet(ws)
     wb.save(EXCEL_FILE)
     wb.close()
 
 
-def delete_record(excel_row):
-    """Delete an existing bill."""
-
+def delete_record(row_num):
     wb = load_workbook(EXCEL_FILE)
     ws = wb["Bill Records"]
 
-    ws.delete_rows(excel_row, 1)
+    ws.delete_rows(row_num, 1)
 
-    style_worksheet(ws)
+    format_worksheet(ws)
     wb.save(EXCEL_FILE)
     wb.close()
-
-
-def make_excel_download():
-    """Create an Excel download from the current saved file."""
-
-    ensure_workbook()
-
-    wb = load_workbook(EXCEL_FILE)
-    ws = wb["Bill Records"]
-
-    style_worksheet(ws)
-
-    output = BytesIO()
-    wb.save(output)
-    wb.close()
-
-    output.seek(0)
-    return output.getvalue()
 
 
 def make_record(
@@ -217,45 +221,74 @@ def make_record(
     sgst,
     final_total,
 ):
-    """Build a record using the required Excel column names."""
-
     return {
-        "Date": datetime.combine(bill_date, datetime.min.time()),
+        "Date": datetime.combine(
+            bill_date, datetime.min.time()
+        ),
         "Bill No.": bill_no.strip(),
-        "Rupees (₹)": float(rupees),
+        "Rupees (₹)": rupees,
         "GST Credit Party Name": party.strip(),
-        "Without GST (₹)": float(without_gst),
-        "9% - CGST (₹)": float(cgst),
-        "9% - SGST (₹)": float(sgst),
-        "With Final Total (₹)": float(final_total),
+        "Without GST (₹)": without_gst,
+        "CGST 9% (₹)": cgst,
+        "SGST 9% (₹)": sgst,
+        "With Final Total (₹)": final_total,
     }
 
 
-def validate_amounts(*amounts):
-    """Reject negative or invalid monetary values."""
+def numeric_value(value):
+    """Convert an empty input into a blank Excel cell."""
 
-    for amount in amounts:
-        if pd.isna(amount) or float(amount) < 0:
-            return False
+    if value is None:
+        return None
 
-    return True
+    return float(value)
 
 
-# --------------------------------------------------
-# APPLICATION HEADER
-# --------------------------------------------------
+def make_excel_download():
+    wb = load_workbook(EXCEL_FILE)
+    ws = wb["Bill Records"]
 
-st.title("🧾 GST Bill Management System")
+    format_worksheet(ws)
+
+    output = BytesIO()
+    wb.save(output)
+    wb.close()
+
+    output.seek(0)
+    return output.getvalue()
+
+
+def format_date(value):
+    if isinstance(value, (datetime, date)):
+        return value.strftime("%d-%m-%Y")
+    return str(value or "")
+
+
+# Create or open the selected monthly workbook
+try:
+    ensure_workbook()
+except PermissionError:
+    st.error(
+        "The Excel file is open or locked. "
+        "Close it in Excel and restart the operation."
+    )
+    st.stop()
+
+
+# ==================================================
+# 4. HEADER AND SUMMARY
+# ==================================================
+
+st.title("🧾 GST Sales Management System")
 st.caption(
-    "Enter, save, search, edit and manage bill records "
-    "directly in an Excel workbook."
+    "Enter and manage monthly sales bills using Excel."
 )
 
-ensure_workbook()
 records = load_records()
 
 total_bills = len(records)
-total_value = sum(
+
+total_sales = sum(
     float(record["With Final Total (₹)"] or 0)
     for record in records
 )
@@ -263,42 +296,38 @@ total_value = sum(
 col1, col2, col3 = st.columns(3)
 
 col1.metric("Total Bills", total_bills)
-col2.metric("Total Final Amount", f"₹ {total_value:,.2f}")
-col3.metric(
-    "Excel File",
-    "Available",
-    help=str(EXCEL_FILE),
-)
+col2.metric("Total Sales", f"₹ {total_sales:,.2f}")
+col3.metric("Active Excel File", EXCEL_FILE.name)
 
 st.divider()
 
 
-# --------------------------------------------------
-# NAVIGATION
-# --------------------------------------------------
+# ==================================================
+# 5. APPLICATION TABS
+# ==================================================
 
 tab_add, tab_view, tab_edit, tab_export = st.tabs(
     [
         "➕ Add Bill",
         "📋 View & Search",
         "✏️ Edit / Delete",
-        "📥 Excel Download",
+        "📥 Download Excel",
     ]
 )
 
 
-# --------------------------------------------------
-# ADD BILL
-# --------------------------------------------------
+# ==================================================
+# 6. ADD BILL
+# ==================================================
 
 with tab_add:
     st.subheader("Enter New Bill")
 
     with st.form("add_bill_form", clear_on_submit=True):
 
-        col1, col2 = st.columns(2)
+        left, right = st.columns(2)
 
-        with col1:
+        with left:
             bill_date = st.date_input(
                 "1. Date",
                 value=date.today(),
@@ -312,209 +341,174 @@ with tab_add:
             rupees = st.number_input(
                 "3. Rupees (₹)",
                 min_value=0.0,
-                value=0.0,
+                value=None,
                 step=100.0,
                 format="%.2f",
-                help="Independent numeric amount.",
+                help="Optional numeric amount.",
             )
 
             party = st.text_input(
-                "4. GST Credit Party Name",
-                placeholder="Enter party name",
+                "4. GST Credit Party Name (Optional)",
+                placeholder="Enter party name, if applicable",
             )
 
-        with col2:
-            if party.strip() !='':
-                without_gst = st.number_input("5. Without GST (₹)",
+        with right:
+            without_gst = st.number_input(
+                "5. Without GST (₹)",
                 min_value=0.0,
-                value=0.0,
+                value=None,
                 step=100.0,
-                format="%.2f",)
+                format="%.2f",
+            )
 
-                cgst = st.number_input(
-                "6. 9% - CGST (₹)",
+            cgst = st.number_input(
+                "6. CGST 9% (₹)",
                 min_value=0.0,
-                value=0.0,
+                value=None,
                 step=10.0,
                 format="%.2f",
-                )
-
-                sgst = st.number_input(
-                    "7. 9% - SGST (₹)",
-                    min_value=0.0,
-                    value=0.0,
-                    step=10.0,
-                    format="%.2f",
-                )
-            else:
-                st.info(
-                "Enter GST Credit Party Name to enable "
-                "Without GST, CGST and SGST fields."
-                )
-                without_gst = 0.0
-                cgst = 0.0
-                sgst = 0.0
-
-            auto_total = st.checkbox(
-                "Calculate final total automatically",
-                value=True,
+                help="Enter the CGST amount manually.",
             )
 
-        if party.strip():
-            calculated_total = without_gst + cgst + sgst
-        else:
-            calculated_total = 0.0
-
-        if auto_total:
-            st.info(
-            "Calculated final total: "
-            f"₹ {calculated_total:,.2f}"
+            sgst = st.number_input(
+                "7. SGST 9% (₹)",
+                min_value=0.0,
+                value=None,
+                step=10.0,
+                format="%.2f",
+                help="Enter the SGST amount manually.",
             )
-            final_total = calculated_total
-        else:
+
             final_total = st.number_input(
-            "8. With Final Total (₹)",
-            min_value=0.0,
-            value=float(calculated_total),
-            step=100.0,
-            format="%.2f",
+                "8. With Final Total (₹)",
+                min_value=0.0,
+                value=None,
+                step=100.0,
+                format="%.2f",
+                help="Enter the final total manually.",
             )
 
-        submitted = st.form_submit_button(
+        save_clicked = st.form_submit_button(
             "💾 Save Bill",
             type="primary",
             use_container_width=True,
         )
 
-    if submitted:
+    if save_clicked:
         if not bill_no.strip():
-            st.error("Please enter the Bill No.")
-
-        elif not party.strip():
-            st.error("Please enter the GST Credit Party Name.")
-
-        elif not validate_amounts(
-            rupees,
-            without_gst,
-            cgst,
-            sgst,
-            final_total,
-        ):
-            st.error("All amounts must be valid and non-negative.")
-
+            st.error("Bill No. is required.")
         else:
+            existing = load_records()
+
             duplicate = any(
-                str(r["Bill No."]).strip().casefold()
+                str(r["Bill No."] or "").strip().casefold()
                 == bill_no.strip().casefold()
-                for r in load_records()
+                for r in existing
             )
 
             if duplicate:
                 st.error(
-                    "This Bill No. already exists. "
-                    "Use Edit / Delete to update the existing bill."
+                    "This Bill No. already exists in this workbook."
                 )
             else:
                 record = make_record(
                     bill_date,
                     bill_no,
-                    rupees,
+                    numeric_value(rupees),
                     party,
-                    without_gst,
-                    cgst,
-                    sgst,
-                    final_total,
+                    numeric_value(without_gst),
+                    numeric_value(cgst),
+                    numeric_value(sgst),
+                    numeric_value(final_total),
                 )
 
                 try:
                     save_record(record)
-                    st.success(
-                        f"Bill {bill_no.strip()} saved successfully."
-                    )
+                    st.success("Bill saved successfully.")
                     st.rerun()
-
                 except PermissionError:
                     st.error(
-                        "Cannot write to bills.xlsx. "
-                        "Close the workbook in Excel and try again."
+                        "Close the Excel file and try again."
                     )
 
 
-# --------------------------------------------------
-# VIEW AND SEARCH
-# --------------------------------------------------
+# ==================================================
+# 7. VIEW AND SEARCH
+# ==================================================
 
 with tab_view:
     st.subheader("Saved Bill Records")
 
-    search = st.text_input(
+    search_term = st.text_input(
         "Search by Bill No. or Party Name",
-        placeholder="Type a bill number or party name",
-        key="search_records",
+        placeholder="Type to search...",
+        key="record_search",
     )
 
-    current_records = load_records()
+    records = load_records()
 
-    if search.strip():
-        term = search.strip().casefold()
+    if search_term.strip():
+        term = search_term.strip().casefold()
 
-        current_records = [
-            r for r in current_records
-            if term in str(r["Bill No."]).casefold()
-            or term in str(r["GST Credit Party Name"]).casefold()
+        records = [
+            r for r in records
+            if term in str(r["Bill No."] or "").casefold()
+            or term in str(
+                r["GST Credit Party Name"] or ""
+            ).casefold()
         ]
 
-    if current_records:
-        df = pd.DataFrame([
+    if records:
+        display_df = pd.DataFrame([
             {column: record[column] for column in COLUMNS}
-            for record in current_records
+            for record in records
         ])
 
-        df["Date"] = pd.to_datetime(
-            df["Date"], errors="coerce"
-        ).dt.strftime("%d-%m-%Y")
+        display_df["Date"] = display_df["Date"].apply(format_date)
 
         st.dataframe(
-            df,
+            display_df,
             use_container_width=True,
             hide_index=True,
         )
 
-        st.caption(f"Showing {len(df)} bill(s).")
+        st.caption(f"{len(display_df)} record(s) displayed.")
     else:
-        st.info("No matching bills found.")
+        st.info("No matching records found.")
 
 
-# --------------------------------------------------
-# EDIT / DELETE
-# --------------------------------------------------
+# ==================================================
+# 8. EDIT OR DELETE
+# ==================================================
 
 with tab_edit:
-    st.subheader("Edit or Delete a Bill")
+    st.subheader("Edit / Delete Existing Bill")
 
-    current_records = load_records()
+    records = load_records()
 
-    if not current_records:
-        st.info("No bills available to edit.")
+    if not records:
+        st.info("There are no records to edit.")
     else:
-        def display_label(record):
+        def record_label(record):
             return (
                 f"Row {record['_excel_row']} | "
                 f"{record['Bill No.']} | "
-                f"{record['GST Credit Party Name']}"
+                f"{record['GST Credit Party Name'] or '(No party name)'}"
             )
 
+        labels = [record_label(r) for r in records]
+
         selected_label = st.selectbox(
-            "Select a bill",
-            options=[display_label(r) for r in current_records],
+            "Select bill",
+            options=labels,
         )
 
         selected = next(
-            r for r in current_records
-            if display_label(r) == selected_label
+            r for r in records
+            if record_label(r) == selected_label
         )
 
-        excel_row = selected["_excel_row"]
+        row_num = selected["_excel_row"]
 
         stored_date = selected["Date"]
         if isinstance(stored_date, datetime):
@@ -522,96 +516,65 @@ with tab_edit:
         elif not isinstance(stored_date, date):
             stored_date = date.today()
 
-        stored_values = [
-            float(selected[column] or 0)
-            for column in [
-                "Rupees (₹)",
-                "Without GST (₹)",
-                "9% - CGST (₹)",
-                "9% - SGST (₹)",
-                "With Final Total (₹)",
-            ]
-        ]
+        def stored_amount(column):
+            value = selected[column]
+            return float(value) if value is not None else None
 
         with st.form("edit_bill_form"):
-            st.caption("Update the selected record.")
-
             edit_date = st.date_input(
                 "Date",
                 value=stored_date,
-                key="edit_date",
             )
 
             edit_bill_no = st.text_input(
                 "Bill No.",
-                value=str(selected["Bill No."]),
-                key="edit_bill_no",
+                value=str(selected["Bill No."] or ""),
             )
 
             edit_rupees = st.number_input(
                 "Rupees (₹)",
                 min_value=0.0,
-                value=stored_values[0],
+                value=stored_amount("Rupees (₹)"),
                 step=100.0,
                 format="%.2f",
-                key="edit_rupees",
             )
 
             edit_party = st.text_input(
-                "GST Credit Party Name",
-                value=str(selected["GST Credit Party Name"]),
-                key="edit_party",
+                "GST Credit Party Name (Optional)",
+                value=str(selected["GST Credit Party Name"] or ""),
             )
 
             edit_without = st.number_input(
                 "Without GST (₹)",
                 min_value=0.0,
-                value=stored_values[1],
+                value=stored_amount("Without GST (₹)"),
                 step=100.0,
                 format="%.2f",
-                key="edit_without",
             )
 
             edit_cgst = st.number_input(
-                "9% - CGST (₹)",
+                "CGST 9% (₹)",
                 min_value=0.0,
-                value=stored_values[2],
+                value=stored_amount("CGST 9% (₹)"),
                 step=10.0,
                 format="%.2f",
-                key="edit_cgst",
             )
 
             edit_sgst = st.number_input(
-                "9% - SGST (₹)",
+                "SGST 9% (₹)",
                 min_value=0.0,
-                value=stored_values[3],
+                value=stored_amount("SGST 9% (₹)"),
                 step=10.0,
                 format="%.2f",
-                key="edit_sgst",
             )
 
-            edit_auto = st.checkbox(
-                "Calculate final total automatically",
-                value=True,
-                key="edit_auto",
+            edit_total = st.number_input(
+                "With Final Total (₹)",
+                min_value=0.0,
+                value=stored_amount("With Final Total (₹)"),
+                step=100.0,
+                format="%.2f",
             )
-
-            edit_calculated = edit_without + edit_cgst + edit_sgst
-
-            if edit_auto:
-                st.info(
-                    f"Final total: ₹ {edit_calculated:,.2f}"
-                )
-                edit_final = edit_calculated
-            else:
-                edit_final = st.number_input(
-                    "With Final Total (₹)",
-                    min_value=0.0,
-                    value=stored_values[4],
-                    step=100.0,
-                    format="%.2f",
-                    key="edit_final",
-                )
 
             update_clicked = st.form_submit_button(
                 "Update Bill",
@@ -620,94 +583,79 @@ with tab_edit:
             )
 
         if update_clicked:
-            if not edit_bill_no.strip() or not edit_party.strip():
-                st.error("Bill No. and Party Name are required.")
-            elif not validate_amounts(
-                edit_rupees,
-                edit_without,
-                edit_cgst,
-                edit_sgst,
-                edit_final,
-            ):
-                st.error("Amounts must be valid and non-negative.")
+            if not edit_bill_no.strip():
+                st.error("Bill No. is required.")
             else:
                 duplicate = any(
-                    r["_excel_row"] != excel_row
-                    and str(r["Bill No."]).strip().casefold()
+                    r["_excel_row"] != row_num
+                    and str(r["Bill No."] or "").strip().casefold()
                     == edit_bill_no.strip().casefold()
                     for r in load_records()
                 )
 
                 if duplicate:
                     st.error(
-                        "Another bill already uses this Bill No."
+                        "Another record already uses this Bill No."
                     )
                 else:
                     updated = make_record(
                         edit_date,
                         edit_bill_no,
-                        edit_rupees,
+                        numeric_value(edit_rupees),
                         edit_party,
-                        edit_without,
-                        edit_cgst,
-                        edit_sgst,
-                        edit_final,
+                        numeric_value(edit_without),
+                        numeric_value(edit_cgst),
+                        numeric_value(edit_sgst),
+                        numeric_value(edit_total),
                     )
 
                     try:
-                        update_record(excel_row, updated)
+                        update_record(row_num, updated)
                         st.success("Bill updated successfully.")
                         st.rerun()
                     except PermissionError:
                         st.error(
-                            "Close bills.xlsx in Excel and try again."
+                            "Close the Excel file and try again."
                         )
 
         st.divider()
-        st.warning(
-            "Deleting a bill permanently removes its row "
-            "from the Excel workbook."
-        )
+        st.warning("Deleting a bill removes it from this workbook.")
 
         confirm_delete = st.checkbox(
-            f"I confirm deletion of bill {selected['Bill No.']}",
-            key=f"confirm_delete_{excel_row}",
+            f"Confirm deletion of Bill No. {selected['Bill No.']}",
+            key=f"confirm_delete_{row_num}",
         )
 
         if st.button(
             "🗑️ Delete Selected Bill",
-            type="secondary",
             disabled=not confirm_delete,
         ):
             try:
-                delete_record(excel_row)
+                delete_record(row_num)
                 st.success("Bill deleted successfully.")
                 st.rerun()
             except PermissionError:
-                st.error(
-                    "Close bills.xlsx in Excel and try again."
-                )
+                st.error("Close the Excel file and try again.")
 
 
-# --------------------------------------------------
-# EXCEL DOWNLOAD
-# --------------------------------------------------
+# ==================================================
+# 9. DOWNLOAD EXCEL
+# ==================================================
 
 with tab_export:
-    st.subheader("Download Excel Workbook")
+    st.subheader("Download Monthly Excel File")
 
     st.write(
-        "Download a copy of all saved bills, including "
-        "Excel formatting and column headings."
+        f"Download the records stored in **{EXCEL_FILE.name}**."
     )
 
     try:
         excel_bytes = make_excel_download()
 
         st.download_button(
-            label="📥 Download bills.xlsx",
+            "📥 Download Excel File",
             data=excel_bytes,
-            file_name="bills.xlsx",
+            file_name=EXCEL_FILE.name,
             mime=(
                 "application/vnd.openxmlformats-officedocument."
                 "spreadsheetml.sheet"
@@ -715,8 +663,5 @@ with tab_export:
             type="primary",
             use_container_width=True,
         )
-
-        st.caption(f"Local workbook: {EXCEL_FILE}")
-
     except PermissionError:
-        st.error("Close the Excel workbook and try again.")
+        st.error("Close the Excel file and try again.")
