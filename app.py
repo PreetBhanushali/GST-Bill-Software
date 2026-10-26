@@ -324,36 +324,48 @@ with tab_add:
             )
 
         with col2:
-            without_gst = st.number_input(
+            if party.strip():
+                without_gst = st.number_input(
                 "5. Without GST (₹)",
                 min_value=0.0,
                 value=0.0,
                 step=100.0,
                 format="%.2f",
-            )
+                )
 
-            cgst = st.number_input(
-                "6. 9% - CGST (₹)",
-                min_value=0.0,
-                value=0.0,
-                step=10.0,
-                format="%.2f",
-            )
+                cgst = st.number_input(
+                    "6. 9% - CGST (₹)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=10.0,
+                    format="%.2f",
+                )
 
-            sgst = st.number_input(
-                "7. 9% - SGST (₹)",
-                min_value=0.0,
-                value=0.0,
-                step=10.0,
-                format="%.2f",
+                sgst = st.number_input(
+                    "7. 9% - SGST (₹)",
+                    min_value=0.0,
+                    value=0.0,
+                    step=10.0,
+                    format="%.2f",
+                )
+            else:
+                st.info(
+                "Enter GST Credit Party Name to enable "
+                "Without GST, CGST and SGST fields."
             )
+            without_gst = 0.0
+            cgst = 0.0
+            sgst = 0.0
 
             auto_total = st.checkbox(
                 "Calculate final total automatically",
                 value=True,
             )
 
-            calculated_total = without_gst + cgst + sgst
+           if party.strip():
+               calculated_total = without_gst + cgst + sgst
+           else:
+                calculated_total = 0.0
 
             if auto_total:
                 st.info(
